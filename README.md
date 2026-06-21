@@ -22,3 +22,5 @@ The software components of this project consist of a C++ library for handling th
 ## Resources
 
 - https://github.com/ZZ-Cat/CRSFforArduino
+- https://github.com/AlfredoSystems/AlfredoCRSF
+- https://stickmanphysics.com/physics-of-drones/
