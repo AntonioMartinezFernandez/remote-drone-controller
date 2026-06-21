@@ -1,0 +1,269 @@
+package main
+
+import (
+	"bytes"
+	"io"
+	"log"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// ---- clamp ----
+
+func TestClamp(t *testing.T) {
+	tests := []struct {
+		name        string
+		v, min, max int
+		want        int
+	}{
+		{"within range", 50, 0, 100, 50},
+		{"below min", -10, 0, 100, 0},
+		{"above max", 150, 0, 100, 100},
+		{"at min boundary", 0, 0, 100, 0},
+		{"at max boundary", 100, 0, 100, 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, clamp(tt.v, tt.min, tt.max))
+		})
+	}
+}
+
+// ---- percentToCRSF ----
+
+func TestPercentToCRSF(t *testing.T) {
+	tests := []struct {
+		name    string
+		percent int
+		want    int
+	}{
+		{"0% maps to crsfMin", 0, crsfMin},
+		{"50% maps exactly to crsfMid", 50, crsfMid},
+		{"100% maps to crsfMax", 100, crsfMax},
+		{"25%", 25, 582},
+		{"75%", 75, 1401},
+		{"negative clamps to crsfMin", -20, crsfMin},
+		{"above 100 clamps to crsfMax", 150, crsfMax},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, percentToCRSF(tt.percent))
+		})
+	}
+}
+
+// ---- DroneControl ----
+
+func TestNewDroneControl_SafeDefaults(t *testing.T) {
+	dc := newDroneControl()
+
+	// centered sticks, idle throttle, disarmed
+	assert.Equal(t, "992,992,172,992,0", dc.packet())
+}
+
+func TestDroneControl_AdjustRoll(t *testing.T) {
+	dc := newDroneControl()
+
+	dc.adjustRoll(controlStep)
+	assert.Equal(t, 50+controlStep, dc.roll)
+
+	dc.adjustRoll(-1000) // far past the lower bound
+	assert.Equal(t, 0, dc.roll, "roll should clamp at 0")
+}
+
+func TestDroneControl_AdjustPitch(t *testing.T) {
+	dc := newDroneControl()
+
+	dc.adjustPitch(1000) // far past the upper bound
+	assert.Equal(t, 100, dc.pitch, "pitch should clamp at 100")
+}
+
+func TestDroneControl_IncreaseThrottleArms(t *testing.T) {
+	dc := newDroneControl()
+	require.False(t, dc.arm, "a new DroneControl should start disarmed")
+
+	dc.increaseThrottle(controlStep)
+
+	assert.True(t, dc.arm, "increaseThrottle should arm the drone")
+	assert.Equal(t, controlStep, dc.throttle)
+}
+
+func TestDroneControl_DecreaseThrottleDoesNotDisarm(t *testing.T) {
+	dc := newDroneControl()
+
+	dc.increaseThrottle(50)
+	dc.decreaseThrottle(50)
+
+	assert.Equal(t, 0, dc.throttle)
+	assert.True(t, dc.arm, "decreaseThrottle should not disarm the drone; only emergencyStop should")
+}
+
+func TestDroneControl_EmergencyStop(t *testing.T) {
+	dc := newDroneControl()
+
+	dc.increaseThrottle(80)
+	dc.adjustRoll(20)
+	dc.adjustPitch(20)
+
+	dc.emergencyStop()
+
+	assert.Equal(t, 0, dc.throttle, "throttle should be zeroed after emergency stop")
+	assert.False(t, dc.arm, "drone should be disarmed after emergency stop")
+	// emergencyStop must only ever touch throttle/arm -- never silently
+	// recenter the sticks too.
+	assert.Equal(t, 70, dc.roll, "emergencyStop must not touch roll")
+	assert.Equal(t, 70, dc.pitch, "emergencyStop must not touch pitch")
+}
+
+// TestDroneControl_PacketWireOrder locks in the firmware's expected wire
+// order (roll,pitch,throttle,yaw,arm), which is NOT the same order as the
+// struct fields. If this test breaks, the ESP32 will silently misread
+// channels instead of failing loudly.
+func TestDroneControl_PacketWireOrder(t *testing.T) {
+	dc := newDroneControl()
+	dc.adjustRoll(50)       // roll -> 100
+	dc.increaseThrottle(50) // throttle -> 50, arms
+
+	parts := strings.Split(dc.packet(), ",")
+	require.Len(t, parts, 5, "packet must have 5 comma-separated fields")
+
+	want := []int{
+		percentToCRSF(100), // roll
+		percentToCRSF(50),  // pitch (untouched, still centered)
+		percentToCRSF(50),  // throttle
+		percentToCRSF(50),  // yaw (untouched, still centered)
+	}
+	for i, w := range want {
+		got, err := strconv.Atoi(parts[i])
+		require.NoErrorf(t, err, "field %d (%q) is not an integer", i, parts[i])
+		assert.Equalf(t, w, got, "field %d", i)
+	}
+	assert.Equal(t, "1", parts[4], "arm field")
+}
+
+// ---- readKeys ----
+
+func TestReadKeys_AppliesKeySequence(t *testing.T) {
+	dc := newDroneControl()
+	done := make(chan struct{})
+
+	// i,i: pitch +10   j,j: roll -10   q,q: throttle +10 & arm   e: emergency stop
+	readKeys(strings.NewReader("iijjqqe"), dc, done)
+
+	select {
+	case <-done:
+	default:
+		t.Fatal("expected done to be closed once the reader hit EOF")
+	}
+
+	assert.Equal(t, 60, dc.pitch)
+	assert.Equal(t, 40, dc.roll)
+	// q,q would arm and raise throttle, but the trailing e (emergency)
+	// should leave it disarmed at zero throttle.
+	assert.Equal(t, 0, dc.throttle, "throttle should be 0 after trailing emergency stop")
+	assert.False(t, dc.arm, "should be disarmed after trailing emergency stop")
+}
+
+func TestReadKeys_StopsOnCtrlC(t *testing.T) {
+	dc := newDroneControl()
+	done := make(chan struct{})
+
+	readKeys(strings.NewReader("ii\x03ll"), dc, done)
+
+	select {
+	case <-done:
+	default:
+		t.Fatal("expected done to be closed after Ctrl+C")
+	}
+
+	assert.Equal(t, 60, dc.pitch, "only the two 'i' presses before Ctrl+C should apply")
+	assert.Equal(t, 50, dc.roll, "keys after Ctrl+C must be ignored")
+}
+
+func TestReadKeys_IgnoresUnknownKeys(t *testing.T) {
+	dc := newDroneControl()
+	done := make(chan struct{})
+
+	readKeys(strings.NewReader("xyz123"), dc, done)
+
+	assert.Equal(t, "992,992,172,992,0", dc.packet(), "unknown keys should leave the defaults untouched")
+}
+
+// ---- sendPacket ----
+
+func TestSendPacket_WritesCurrentPacket(t *testing.T) {
+	dc := newDroneControl()
+	dc.increaseThrottle(30)
+
+	var buf bytes.Buffer
+	sendPacket(&buf, dc)
+
+	assert.Equal(t, dc.packet(), buf.String())
+}
+
+// errWriter always fails, to exercise sendPacket's error path.
+type errWriter struct{}
+
+func (errWriter) Write(p []byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestSendPacket_LogsOnWriteError(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	sendPacket(errWriter{}, newDroneControl())
+
+	assert.Contains(t, logBuf.String(), "send error")
+}
+
+// ---- concurrency ----
+
+// TestDroneControl_ConcurrentAccess hammers a single DroneControl from many
+// goroutines at once. It doesn't assert exact final values (the outcome is
+// inherently order-dependent), but it does assert the clamp invariants
+// still hold, and -- most importantly -- it gives `go test -race` real
+// concurrent access to catch any data race in the locking.
+func TestDroneControl_ConcurrentAccess(t *testing.T) {
+	dc := newDroneControl()
+
+	actions := []func(){
+		func() { dc.adjustRoll(controlStep) },
+		func() { dc.adjustRoll(-controlStep) },
+		func() { dc.adjustPitch(controlStep) },
+		func() { dc.adjustPitch(-controlStep) },
+		func() { dc.increaseThrottle(controlStep) },
+		func() { dc.decreaseThrottle(controlStep) },
+		func() { _ = dc.packet() },
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		for _, action := range actions {
+			wg.Add(1)
+			go func(a func()) {
+				defer wg.Done()
+				a()
+			}(action)
+		}
+	}
+	wg.Wait()
+
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	assert.GreaterOrEqual(t, dc.roll, 0)
+	assert.LessOrEqual(t, dc.roll, 100)
+	assert.GreaterOrEqual(t, dc.pitch, 0)
+	assert.LessOrEqual(t, dc.pitch, 100)
+	assert.GreaterOrEqual(t, dc.throttle, 0)
+	assert.LessOrEqual(t, dc.throttle, 100)
+}

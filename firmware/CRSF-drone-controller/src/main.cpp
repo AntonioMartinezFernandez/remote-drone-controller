@@ -40,8 +40,7 @@ AlfredoCRSF crsf;
 
 // -------- Channel value range --------
 // These are the standard CRSF 11-bit tick values, and they happen to be
-// numerically identical to the SBUS ones (172 / 992 / 1811), so the UDP
-// packet format and the clamping logic don't need to change.
+// numerically identical to the SBUS ones (172 / 992 / 1811)
 #define CRSF_MIN CRSF_CHANNEL_VALUE_MIN
 #define CRSF_MID CRSF_CHANNEL_VALUE_MID
 #define CRSF_MAX CRSF_CHANNEL_VALUE_MAX
