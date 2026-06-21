@@ -62,14 +62,14 @@ func TestPercentToCRSF(t *testing.T) {
 // ---- DroneControl ----
 
 func TestNewDroneControl_SafeDefaults(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 
 	// centered sticks, idle throttle, disarmed
 	assert.Equal(t, "992,992,172,992,0", dc.packet())
 }
 
 func TestDroneControl_AdjustRoll(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 
 	dc.adjustRoll(ControlStepPercent)
 	assert.Equal(t, 50+ControlStepPercent, dc.roll)
@@ -79,14 +79,14 @@ func TestDroneControl_AdjustRoll(t *testing.T) {
 }
 
 func TestDroneControl_AdjustPitch(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 
 	dc.adjustPitch(1000) // far past the upper bound
 	assert.Equal(t, 100, dc.pitch, "pitch should clamp at 100")
 }
 
 func TestDroneControl_IncreaseThrottleArms(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 	require.False(t, dc.arm, "a new DroneControl should start disarmed")
 
 	dc.increaseThrottle(ControlStepPercent)
@@ -96,7 +96,7 @@ func TestDroneControl_IncreaseThrottleArms(t *testing.T) {
 }
 
 func TestDroneControl_DecreaseThrottleDoesNotDisarm(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 
 	dc.increaseThrottle(50)
 	dc.decreaseThrottle(50)
@@ -106,7 +106,7 @@ func TestDroneControl_DecreaseThrottleDoesNotDisarm(t *testing.T) {
 }
 
 func TestDroneControl_EmergencyStop(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 
 	dc.increaseThrottle(80)
 	dc.adjustRoll(20)
@@ -127,7 +127,7 @@ func TestDroneControl_EmergencyStop(t *testing.T) {
 // struct fields. If this test breaks, the ESP32 will silently misread
 // channels instead of failing loudly.
 func TestDroneControl_PacketWireOrder(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 	dc.adjustRoll(50)       // roll -> 100
 	dc.increaseThrottle(50) // throttle -> 50, arms
 
@@ -151,7 +151,7 @@ func TestDroneControl_PacketWireOrder(t *testing.T) {
 // ---- readKeys ----
 
 func TestReadKeys_AppliesKeySequence(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 	done := make(chan struct{})
 
 	// i,i: pitch +10   j,j: roll -10   q,q: throttle +10 & arm   e: emergency stop
@@ -172,7 +172,7 @@ func TestReadKeys_AppliesKeySequence(t *testing.T) {
 }
 
 func TestReadKeys_StopsOnCtrlC(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 	done := make(chan struct{})
 
 	readKeys(strings.NewReader("ii\x03ll"), dc, done)
@@ -188,7 +188,7 @@ func TestReadKeys_StopsOnCtrlC(t *testing.T) {
 }
 
 func TestReadKeys_IgnoresUnknownKeys(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 	done := make(chan struct{})
 
 	readKeys(strings.NewReader("xyz123"), dc, done)
@@ -199,7 +199,7 @@ func TestReadKeys_IgnoresUnknownKeys(t *testing.T) {
 // ---- sendPacket ----
 
 func TestSendPacket_WritesCurrentPacket(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 	dc.increaseThrottle(30)
 
 	var buf bytes.Buffer
@@ -221,7 +221,7 @@ func TestSendPacket_LogsOnWriteError(t *testing.T) {
 	log.SetOutput(&logBuf)
 	defer log.SetOutput(prev)
 
-	sendPacket(errWriter{}, newDroneControl())
+	sendPacket(errWriter{}, NewDroneState())
 
 	assert.Contains(t, logBuf.String(), "send error")
 }
@@ -234,7 +234,7 @@ func TestSendPacket_LogsOnWriteError(t *testing.T) {
 // still hold, and -- most importantly -- it gives `go test -race` real
 // concurrent access to catch any data race in the locking.
 func TestDroneControl_ConcurrentAccess(t *testing.T) {
-	dc := newDroneControl()
+	dc := NewDroneState()
 
 	actions := []func(){
 		func() { dc.adjustRoll(ControlStepPercent) },

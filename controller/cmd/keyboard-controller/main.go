@@ -1,34 +1,17 @@
-// Command dronectl provides a simple keyboard-driven control loop for the
-// ESP32 WiFi-to-CRSF bridge described in the project README.
-//
-// Controls:
-//
-//	i / k   pitch forward / back
-//	j / l   roll left / right
-//	q / a   throttle up / down (arms the drone on first increase)
-//	e       emergency stop (throttle to 0, disarm)
-//	Ctrl+C  quit
-//
-// NOTE: the requirements for this program specify movement and throttle
-// keys but no dedicated arm/disarm key. Since there's no way to raise
-// throttle usefully on a disarmed drone, this program arms automatically
-// the first time throttle is increased (q). Emergency (e) is the only way
-// to disarm. If you'd rather have an explicit arm key, that's a one-line
-// change in increaseThrottle below.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/AntonioMartinezFernandez/remote-drone-controller/cmd/di"
-
-	"golang.org/x/term"
+	"github.com/AntonioMartinezFernandez/remote-drone-controller/internal/screen"
+	"github.com/AntonioMartinezFernandez/remote-drone-controller/pkg/logger"
 )
 
 var (
@@ -45,7 +28,7 @@ func main() {
 	di := di.InitKeyboardControllerDi(ctx)
 	di.CommonServices.Logger.Info(ctx, "starting keyboard controller")
 
-	// Load configuration values from environment variables
+	// Set global variables with values from environment variables
 	CrsfMin = di.CommonServices.Config.CsrfChannelValueMin
 	CrsfMid = di.CommonServices.Config.CsrfChannelValueMid
 	CrsfMax = di.CommonServices.Config.CsrfChannelValueMax
@@ -53,47 +36,48 @@ func main() {
 
 	conn, err := net.Dial("udp", di.CommonServices.Config.UdpReceiverAddr)
 	if err != nil {
-		log.Fatalf("failed to connect to ESP32: %v", err)
+		di.CommonServices.Logger.Error(ctx, fmt.Sprintf("failed to connect to receiver: %v", err))
+		os.Exit(1)
 	}
 	defer conn.Close()
 
-	stdinFd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(stdinFd)
+	droneState := NewDroneState()
+
+	droneUI, err := screen.NewScreen()
 	if err != nil {
-		log.Fatalf("failed to set terminal to raw mode: %v", err)
+		di.CommonServices.Logger.Error(ctx, fmt.Sprintf("failed to initialize screen: %v", err))
+		os.Exit(1)
 	}
-	defer term.Restore(stdinFd, oldState)
+	defer droneUI.Finalize()
 
-	control := newDroneControl()
 	done := make(chan struct{})
-	go readKeys(os.Stdin, control, done)
+	go readKeys(droneUI, droneState, done)
 
-	printControls()
-
-	ticker := time.NewTicker(time.Duration(di.CommonServices.Config.TransmitIntervalMs))
+	ticker := time.NewTicker(di.CommonServices.Config.TransmitIntervalMs)
 	defer ticker.Stop()
+
+	redrawScreen(droneUI, droneState)
 
 	for {
 		select {
 		case <-done:
-			// Make sure we leave the drone disarmed before exiting.
-			control.emergencyStop()
-			sendPacket(conn, control)
+			droneState.emergencyStop()
+			sendPacket(conn, droneState, di.CommonServices.Logger, ctx)
 			return
 		case <-ticker.C:
-			sendPacket(conn, control)
+			sendPacket(conn, droneState, di.CommonServices.Logger, ctx)
+			redrawScreen(droneUI, droneState)
 		}
 	}
 }
 
-// DroneControl holds the current commanded state of the drone as
-// human-friendly percentages rather than raw CRSF ticks.
-//
-// Roll, Pitch and Yaw are 0-100, where 50 is centered/neutral and 0/100 are
-// full deflection in either direction. Throttle is 0 (idle) to 100 (full).
-// All access goes through the methods below, which are safe to call
-// concurrently from the key-reader goroutine and the send loop.
-type DroneControl struct {
+// redrawScreen pulls a consistent snapshot of the drone state and pushes it to the screen
+func redrawScreen(scr *screen.Screen, droneState *DroneState) {
+	roll, pitch, yaw, throttle, arm := droneState.snapshot()
+	scr.Refresh(roll, pitch, yaw, throttle, arm)
+}
+
+type DroneState struct {
 	mu       sync.Mutex
 	roll     int
 	pitch    int
@@ -102,10 +86,8 @@ type DroneControl struct {
 	arm      bool
 }
 
-// newDroneControl returns a DroneControl in a safe starting state: sticks
-// centered, throttle at idle, disarmed.
-func newDroneControl() *DroneControl {
-	return &DroneControl{roll: 50, pitch: 50, yaw: 50, throttle: 0, arm: false}
+func NewDroneState() *DroneState {
+	return &DroneState{roll: 50, pitch: 50, yaw: 50, throttle: 0, arm: false}
 }
 
 func clamp(v, min, max int) int {
@@ -118,13 +100,13 @@ func clamp(v, min, max int) int {
 	return v
 }
 
-func (d *DroneControl) adjustRoll(delta int) {
+func (d *DroneState) adjustRoll(delta int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.roll = clamp(d.roll+delta, 0, 100)
 }
 
-func (d *DroneControl) adjustPitch(delta int) {
+func (d *DroneState) adjustPitch(delta int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pitch = clamp(d.pitch+delta, 0, 100)
@@ -132,44 +114,43 @@ func (d *DroneControl) adjustPitch(delta int) {
 
 // increaseThrottle raises the throttle and arms the drone if it isn't
 // already armed -- see the package-level NOTE for why.
-func (d *DroneControl) increaseThrottle(delta int) {
+func (d *DroneState) increaseThrottle(delta int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.arm = true
 	d.throttle = clamp(d.throttle+delta, 0, 100)
 }
 
-func (d *DroneControl) decreaseThrottle(delta int) {
+func (d *DroneState) decreaseThrottle(delta int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.throttle = clamp(d.throttle-delta, 0, 100)
 }
 
 // emergencyStop immediately disarms the drone and zeroes the throttle.
-func (d *DroneControl) emergencyStop() {
+func (d *DroneState) emergencyStop() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.throttle = 0
 	d.arm = false
 }
 
+// snapshot returns a consistent copy of all fields under a single lock,
+// so callers (like the redraw loop) never read a half-updated state.
+func (d *DroneState) snapshot() (roll, pitch, yaw, throttle int, arm bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.roll, d.pitch, d.yaw, d.throttle, d.arm
+}
+
 // percentToCRSF linearly maps a 0-100 percentage to the CRSF tick range
 // used by the firmware, where 50% maps to the centered tick value.
-//
-// Rounds to the nearest tick (rather than truncating) so that the
-// boundaries map exactly: 0->crsfMin, 50->crsfMid, 100->crsfMax.
 func percentToCRSF(percent int) int {
 	percent = clamp(percent, 0, 100)
 	return CrsfMin + ((CrsfMax-CrsfMin)*percent+50)/100
 }
 
-// packet renders the current state as the comma-separated string expected
-// by the ESP32 firmware's UDP listener.
-//
-// IMPORTANT: the firmware parses "roll,pitch,throttle,yaw,arm" -- that
-// wire order does not match this struct's field order, so don't reorder
-// this without also updating the firmware (or vice versa).
-func (d *DroneControl) packet() string {
+func (d *DroneState) serializePacket() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -187,55 +168,38 @@ func (d *DroneControl) packet() string {
 	)
 }
 
-// readKeys reads raw single-byte keypresses from r and applies them to
-// control until r returns an error (EOF, closed stdin, ...) or Ctrl+C is
-// pressed, then closes done.
-//
-// Taking an io.Reader instead of hardcoding os.Stdin keeps this testable:
-// tests can feed it a strings.Reader instead of needing a real terminal.
-func readKeys(r io.Reader, control *DroneControl, done chan<- struct{}) {
+func readKeys(droneUI *screen.Screen, droneState *DroneState, done chan<- struct{}) {
 	defer close(done)
 
-	buf := make([]byte, 1)
 	for {
-		n, err := r.Read(buf)
-		if err != nil || n == 0 {
+		ev := droneUI.NextKey()
+		if ev.Quit {
 			return
 		}
 
-		switch buf[0] {
+		switch ev.Rune {
 		case 'i': // forward
-			control.adjustPitch(ControlStepPercent)
+			droneState.adjustPitch(ControlStepPercent)
 		case 'k': // back
-			control.adjustPitch(-ControlStepPercent)
+			droneState.adjustPitch(-ControlStepPercent)
 		case 'j': // left
-			control.adjustRoll(-ControlStepPercent)
+			droneState.adjustRoll(-ControlStepPercent)
 		case 'l': // right
-			control.adjustRoll(ControlStepPercent)
+			droneState.adjustRoll(ControlStepPercent)
 		case 'q': // throttle up
-			control.increaseThrottle(ControlStepPercent)
+			droneState.increaseThrottle(ControlStepPercent)
 		case 'a': // throttle down
-			control.decreaseThrottle(ControlStepPercent)
+			droneState.decreaseThrottle(ControlStepPercent)
 		case 'e': // emergency stop
-			control.emergencyStop()
-		case 0x03: // Ctrl+C -- raw mode disables normal SIGINT handling
-			return
+			droneState.emergencyStop()
 		}
 	}
 }
 
 // sendPacket writes the current control packet to w. Taking an io.Writer
 // instead of net.Conn keeps this testable with an in-memory buffer.
-func sendPacket(w io.Writer, control *DroneControl) {
-	if _, err := w.Write([]byte(control.packet())); err != nil {
-		log.Printf("send error: %v", err)
+func sendPacket(w io.Writer, control *DroneState, log logger.Logger, ctx context.Context) {
+	if _, err := w.Write([]byte(control.serializePacket())); err != nil {
+		log.Error(ctx, fmt.Sprintf("send error: %v", err))
 	}
-}
-
-func printControls() {
-	fmt.Println("Drone control - keys:")
-	fmt.Println("  i/k  forward/back   j/l  left/right")
-	fmt.Println("  q/a  throttle up/down (q also arms)")
-	fmt.Println("  e    EMERGENCY STOP")
-	fmt.Println("  Ctrl+C  quit")
 }
