@@ -26,24 +26,65 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AntonioMartinezFernandez/remote-drone-controller/cmd/di"
+
 	"golang.org/x/term"
 )
 
-// CRSF channel tick range used by the ESP32 firmware (matches its
-// CRSF_CHANNEL_VALUE_MIN/MID/MAX).
-const (
-	crsfMin = 172
-	crsfMid = 992
-	crsfMax = 1811
+var (
+	CrsfMin            int = 172
+	CrsfMid            int = 992
+	CrsfMax            int = 1811
+	ControlStepPercent int = 5
 )
 
-const (
-	espAddr = "192.168.4.1:4210" // ESP32 access point + UDP control port
-	// espAddr      = "127.0.0.1:4210" // ESP32 access point + UDP control port
-	sendInterval  = 20 * time.Millisecond
-	controlStep   = 5 // percentage points adjusted per keypress
-	firstThrottle = controlStep * 8
-)
+func main() {
+	// Initialize Dependencies
+	ctx, cancel := di.RootContext()
+	defer cancel()
+	di := di.InitKeyboardControllerDi(ctx)
+	di.CommonServices.Logger.Info(ctx, "starting keyboard controller")
+
+	// Load configuration values from environment variables
+	CrsfMin = di.CommonServices.Config.CsrfChannelValueMin
+	CrsfMid = di.CommonServices.Config.CsrfChannelValueMid
+	CrsfMax = di.CommonServices.Config.CsrfChannelValueMax
+	ControlStepPercent = di.CommonServices.Config.ControlStepPercent
+
+	conn, err := net.Dial("udp", di.CommonServices.Config.UdpReceiverAddr)
+	if err != nil {
+		log.Fatalf("failed to connect to ESP32: %v", err)
+	}
+	defer conn.Close()
+
+	stdinFd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(stdinFd)
+	if err != nil {
+		log.Fatalf("failed to set terminal to raw mode: %v", err)
+	}
+	defer term.Restore(stdinFd, oldState)
+
+	control := newDroneControl()
+	done := make(chan struct{})
+	go readKeys(os.Stdin, control, done)
+
+	printControls()
+
+	ticker := time.NewTicker(time.Duration(di.CommonServices.Config.TransmitIntervalMs))
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			// Make sure we leave the drone disarmed before exiting.
+			control.emergencyStop()
+			sendPacket(conn, control)
+			return
+		case <-ticker.C:
+			sendPacket(conn, control)
+		}
+	}
+}
 
 // DroneControl holds the current commanded state of the drone as
 // human-friendly percentages rather than raw CRSF ticks.
@@ -119,7 +160,7 @@ func (d *DroneControl) emergencyStop() {
 // boundaries map exactly: 0->crsfMin, 50->crsfMid, 100->crsfMax.
 func percentToCRSF(percent int) int {
 	percent = clamp(percent, 0, 100)
-	return crsfMin + ((crsfMax-crsfMin)*percent+50)/100
+	return CrsfMin + ((CrsfMax-CrsfMin)*percent+50)/100
 }
 
 // packet renders the current state as the comma-separated string expected
@@ -164,17 +205,17 @@ func readKeys(r io.Reader, control *DroneControl, done chan<- struct{}) {
 
 		switch buf[0] {
 		case 'i': // forward
-			control.adjustPitch(controlStep)
+			control.adjustPitch(ControlStepPercent)
 		case 'k': // back
-			control.adjustPitch(-controlStep)
+			control.adjustPitch(-ControlStepPercent)
 		case 'j': // left
-			control.adjustRoll(-controlStep)
+			control.adjustRoll(-ControlStepPercent)
 		case 'l': // right
-			control.adjustRoll(controlStep)
+			control.adjustRoll(ControlStepPercent)
 		case 'q': // throttle up
-			control.increaseThrottle(controlStep)
+			control.increaseThrottle(ControlStepPercent)
 		case 'a': // throttle down
-			control.decreaseThrottle(controlStep)
+			control.decreaseThrottle(ControlStepPercent)
 		case 'e': // emergency stop
 			control.emergencyStop()
 		case 0x03: // Ctrl+C -- raw mode disables normal SIGINT handling
@@ -197,40 +238,4 @@ func printControls() {
 	fmt.Println("  q/a  throttle up/down (q also arms)")
 	fmt.Println("  e    EMERGENCY STOP")
 	fmt.Println("  Ctrl+C  quit")
-}
-
-func main() {
-	conn, err := net.Dial("udp", espAddr)
-	if err != nil {
-		log.Fatalf("failed to connect to ESP32: %v", err)
-	}
-	defer conn.Close()
-
-	stdinFd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(stdinFd)
-	if err != nil {
-		log.Fatalf("failed to set terminal to raw mode: %v", err)
-	}
-	defer term.Restore(stdinFd, oldState)
-
-	control := newDroneControl()
-	done := make(chan struct{})
-	go readKeys(os.Stdin, control, done)
-
-	printControls()
-
-	ticker := time.NewTicker(sendInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-done:
-			// Make sure we leave the drone disarmed before exiting.
-			control.emergencyStop()
-			sendPacket(conn, control)
-			return
-		case <-ticker.C:
-			sendPacket(conn, control)
-		}
-	}
 }

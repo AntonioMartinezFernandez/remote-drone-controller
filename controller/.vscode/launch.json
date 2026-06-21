@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Keyboard Controller",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/keyboard-controller/main.go",
+      "console": "integratedTerminal",
+      "env": {
+        "LOG_LEVEL": "debug",
+        "UDP_RECEIVER_ADDR": "127.0.0.1:4210"
+      },
+
+      "args": [] //! Arguments in form of key-value pairs (e.g. ["--key", "value"])
+    }
+  ]
+}

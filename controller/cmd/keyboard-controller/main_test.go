@@ -43,13 +43,13 @@ func TestPercentToCRSF(t *testing.T) {
 		percent int
 		want    int
 	}{
-		{"0% maps to crsfMin", 0, crsfMin},
-		{"50% maps exactly to crsfMid", 50, crsfMid},
-		{"100% maps to crsfMax", 100, crsfMax},
+		{"0% maps to crsfMin", 0, CrsfMin},
+		{"50% maps exactly to crsfMid", 50, CrsfMid},
+		{"100% maps to crsfMax", 100, CrsfMax},
 		{"25%", 25, 582},
 		{"75%", 75, 1401},
-		{"negative clamps to crsfMin", -20, crsfMin},
-		{"above 100 clamps to crsfMax", 150, crsfMax},
+		{"negative clamps to crsfMin", -20, CrsfMin},
+		{"above 100 clamps to crsfMax", 150, CrsfMax},
 	}
 
 	for _, tt := range tests {
@@ -71,8 +71,8 @@ func TestNewDroneControl_SafeDefaults(t *testing.T) {
 func TestDroneControl_AdjustRoll(t *testing.T) {
 	dc := newDroneControl()
 
-	dc.adjustRoll(controlStep)
-	assert.Equal(t, 50+controlStep, dc.roll)
+	dc.adjustRoll(ControlStepPercent)
+	assert.Equal(t, 50+ControlStepPercent, dc.roll)
 
 	dc.adjustRoll(-1000) // far past the lower bound
 	assert.Equal(t, 0, dc.roll, "roll should clamp at 0")
@@ -89,10 +89,10 @@ func TestDroneControl_IncreaseThrottleArms(t *testing.T) {
 	dc := newDroneControl()
 	require.False(t, dc.arm, "a new DroneControl should start disarmed")
 
-	dc.increaseThrottle(controlStep)
+	dc.increaseThrottle(ControlStepPercent)
 
 	assert.True(t, dc.arm, "increaseThrottle should arm the drone")
-	assert.Equal(t, controlStep, dc.throttle)
+	assert.Equal(t, ControlStepPercent, dc.throttle)
 }
 
 func TestDroneControl_DecreaseThrottleDoesNotDisarm(t *testing.T) {
@@ -237,12 +237,12 @@ func TestDroneControl_ConcurrentAccess(t *testing.T) {
 	dc := newDroneControl()
 
 	actions := []func(){
-		func() { dc.adjustRoll(controlStep) },
-		func() { dc.adjustRoll(-controlStep) },
-		func() { dc.adjustPitch(controlStep) },
-		func() { dc.adjustPitch(-controlStep) },
-		func() { dc.increaseThrottle(controlStep) },
-		func() { dc.decreaseThrottle(controlStep) },
+		func() { dc.adjustRoll(ControlStepPercent) },
+		func() { dc.adjustRoll(-ControlStepPercent) },
+		func() { dc.adjustPitch(ControlStepPercent) },
+		func() { dc.adjustPitch(-ControlStepPercent) },
+		func() { dc.increaseThrottle(ControlStepPercent) },
+		func() { dc.decreaseThrottle(ControlStepPercent) },
 		func() { _ = dc.packet() },
 	}
 

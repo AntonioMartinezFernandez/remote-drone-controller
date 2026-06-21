@@ -1,6 +1,6 @@
-APP=cmd/controller/main.go
+APP=cmd/keyboard-controller/main.go
 UDPLISTENER=cmd/udp-listener/main.go
-BIN=bin/controller
+BIN=bin/keyboard-controller
 
 .PHONY: all build run race
 
