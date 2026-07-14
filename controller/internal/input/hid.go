@@ -31,7 +31,7 @@ func Open(path string, config Config) (*HidReader, error) {
 
 func (r *HidReader) Read() (*InputState, error) {
 	buffer := make([]byte, 64)
-	n, err := r.device.ReadWithTimeout(buffer, 50)
+	n, err := r.device.ReadWithTimeout(buffer, r.config.ReadTimeout)
 	if err != nil {
 		if err == hid.ErrTimeout {
 			return nil, nil

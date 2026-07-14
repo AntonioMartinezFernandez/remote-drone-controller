@@ -11,7 +11,7 @@ import (
 type Config struct {
 	LogLevel             string        `env:"LOG_LEVEL,default=debug"`
 	UdpReceiverAddr      string        `env:"UDP_RECEIVER_ADDR,required"`
-	TransmitIntervalMs   time.Duration `env:"TRANSMIT_INTERVAL_MS,default=10ms"`
+	TransmitIntervalMs   time.Duration `env:"TRANSMIT_INTERVAL_MS,default=5ms"`
 	ControlStepPercent   int           `env:"CONTROL_STEP_PERCENT,default=5"`
 	FirstThrottlePercent int           `env:"FIRST_THROTTLE_PERCENT,default=40"`
 	CsrfChannelValueMin  int           `env:"CSRF_CHANNEL_VALUE_MIN,default=172"`

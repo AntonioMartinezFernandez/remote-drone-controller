@@ -85,7 +85,7 @@ func (s *Screen) drawScreen(
 		{"  [I/K]  Forward / Backward  (Roll axis)                        ", tcell.ColorGreen},
 		{"  [J/L]  Yaw left / right    (Pitch axis)                       ", tcell.ColorGreen},
 		// {"  [Q/E]  Strafe left / right (Throttle axis)", tcell.ColorGreen}, //! TODO: Add strafe support to the drone and then re-enable this line.
-		{"  [Q/A]  Up / Down           (Yaw axis)                         ", tcell.ColorGreen},
+		{"  [Q/A]  Up / Down           (Throttle axis)                    ", tcell.ColorGreen},
 		{"", tcell.ColorWhite},
 		{"  [Ctrl+C / Ctrl+D] Quit                                        ", tcell.ColorGray},
 		{"", tcell.ColorWhite},

@@ -1,7 +1,9 @@
 package input
 
+import "time"
+
 type AxisConfig struct {
-	Name     string
+	Name     AxisName
 	BitStart int
 	BitLen   int
 	Inverted bool
@@ -13,17 +15,18 @@ type ButtonConfig struct {
 }
 
 type Config struct {
-	Axes    []AxisConfig
-	Buttons []ButtonConfig
+	Axes        []AxisConfig
+	Buttons     []ButtonConfig
+	ReadTimeout time.Duration
 }
 
 func GetConfig() Config {
 	return Config{
 		Axes: []AxisConfig{
-			{"Roll", 0, 10, false},
-			{"Pitch", 10, 10, true},
-			{"Throttle", 32, 8, true},
-			{"Yaw", 22, 10, false},
+			{AxisRoll, 0, 10, false},
+			{AxisPitch, 10, 10, true},
+			{AxisThrottle, 32, 8, true},
+			{AxisYaw, 22, 10, false},
 		},
 		Buttons: []ButtonConfig{
 			{0, "BTN 0"},
@@ -35,5 +38,6 @@ func GetConfig() Config {
 			{12, "BTN 12"},
 			{13, "BTN 13"},
 		},
+		ReadTimeout: 3 * time.Millisecond,
 	}
 }

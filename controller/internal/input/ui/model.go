@@ -60,7 +60,7 @@ func NewModel(config input.Config, deviceInfo input.DeviceInfo) Model {
 			progress.WithSpringOptions(20, 1.0),
 			progress.WithoutPercentage(),
 		)
-		m.axes[i] = ax.Name
+		m.axes[i] = string(ax.Name)
 	}
 	for i, btn := range config.Buttons {
 		m.buttonNames[i] = btn.Name
@@ -118,30 +118,38 @@ func (m Model) View() tea.View {
 	s += m.renderAxes()
 	s += m.renderButtons()
 	s += renderFooter()
+
 	return tea.NewView(s)
 }
 
 func renderHeader(info input.DeviceInfo) string {
 	title := "USB HID Drone Controller"
 	device := fmt.Sprintf("%s (VID:0x%04X PID:0x%04X)", info.Product, info.Vendor, info.PID)
+
 	return headerStyle.Render(title) + "\n" +
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render(device) + "\n"
 }
 
 func (m Model) renderAxes() string {
 	var s string
+
 	for i, ax := range m.axes {
 		val := m.state.Axes[i].Value
 		pct := fmt.Sprintf("%5.1f%%", val)
 		label := axisLabelStyle.Render(ax + ":")
 		bar := m.progressBars[i].View()
+
 		s += "\n" + lipgloss.NewStyle().PaddingLeft(2).Render(label+" "+bar+" "+pct)
 	}
+
+	s += "\n"
+
 	return s
 }
 
 func (m Model) renderButtons() string {
 	var s string
+
 	for i, btn := range m.buttonNames {
 		var state string
 		if i < len(m.state.Buttons) && m.state.Buttons[i].Pressed {
@@ -149,11 +157,15 @@ func (m Model) renderButtons() string {
 		} else {
 			state = buttonOffStyle.Render("OFF")
 		}
+
 		s += "\n" + lipgloss.NewStyle().PaddingLeft(2).Render(fmt.Sprintf("  %s: [%s]", btn, state))
 	}
+
+	s += "\n"
+
 	return s
 }
 
 func renderFooter() string {
-	return footerStyle.Render("\n  press q or ctrl+c to exit")
+	return footerStyle.Render("(*) Press q or ctrl+c to exit")
 }
